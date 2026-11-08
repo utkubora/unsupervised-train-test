@@ -1,0 +1,4 @@
+storage/
+out/
+.venv/
+__pycache__/

@@ -30,6 +30,7 @@ import argparse
 import math
 import os
 from itertools import chain
+from pathlib import Path
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")  # we parallelize with num_proc instead
 
@@ -47,6 +48,8 @@ from transformers.trainer_utils import get_last_checkpoint
 
 DEFAULT_MODEL = "Qwen/Qwen3.8-27B"
 DEFAULT_DATASET = "tascib/turkish-llm-dataset"
+# Downloaded models go to <storage>/models, datasets (raw + tokenized cache) to <storage>/datasets
+DEFAULT_STORAGE = Path(__file__).resolve().parent / "storage"
 
 
 def parse_args():
@@ -54,6 +57,8 @@ def parse_args():
     # Model
     p.add_argument("--model_name", default=DEFAULT_MODEL,
                    help="Any causal LM on the Hugging Face Hub (base models work best).")
+    p.add_argument("--storage_dir", default=str(DEFAULT_STORAGE),
+                   help="Where models/ and datasets/ are downloaded. Put this on a large disk.")
     p.add_argument("--attn_implementation", default="sdpa",
                    help="sdpa (default) or flash_attention_2 if flash-attn is installed.")
     # Data
@@ -89,6 +94,10 @@ def parse_args():
     args = p.parse_args()
     if args.lr is None:
         args.lr = 1e-5 if args.full_finetune else 1e-4
+    args.model_cache = os.path.join(args.storage_dir, "models")
+    args.data_cache = os.path.join(args.storage_dir, "datasets")
+    os.makedirs(args.model_cache, exist_ok=True)
+    os.makedirs(args.data_cache, exist_ok=True)
     return args
 
 
@@ -96,13 +105,21 @@ def load_raw_dataset(args):
     if args.train_files:
         # "paragraph" = each blank-line-separated block becomes one document
         ds = load_dataset("text", data_files={"train": args.train_files},
-                          sample_by="paragraph", split="train")
-    elif args.hf_dataset == DEFAULT_DATASET and args.hf_num_files > 0:
-        # Only download the first N shards instead of the full ~158 GB corpus
-        files = [f"data/dataset_part_{i}.jsonl" for i in range(args.hf_num_files)]
-        ds = load_dataset(args.hf_dataset, data_files={"train": files}, split="train")
+                          sample_by="paragraph", split="train", cache_dir=args.data_cache)
     else:
-        ds = load_dataset(args.hf_dataset, args.hf_config, split="train")
+        # Download raw files into <storage>/datasets/raw/<repo> (not the global HF cache)
+        from huggingface_hub import snapshot_download
+        raw_dir = os.path.join(args.data_cache, "raw", args.hf_dataset.replace("/", "__"))
+        if args.hf_dataset == DEFAULT_DATASET and args.hf_num_files > 0:
+            # Only download the first N shards instead of the full ~158 GB corpus
+            files = [f"data/dataset_part_{i}.jsonl" for i in range(args.hf_num_files)]
+            snapshot_download(args.hf_dataset, repo_type="dataset", local_dir=raw_dir,
+                              allow_patterns=files, max_workers=16)
+            ds = load_dataset("json", data_files={"train": [os.path.join(raw_dir, f) for f in files]},
+                              split="train", cache_dir=args.data_cache)
+        else:
+            snapshot_download(args.hf_dataset, repo_type="dataset", local_dir=raw_dir, max_workers=16)
+            ds = load_dataset(raw_dir, args.hf_config, split="train", cache_dir=args.data_cache)
 
     ds = ds.filter(lambda x: x[args.text_column] is not None and len(x[args.text_column].strip()) > 0,
                    num_proc=args.num_proc)
@@ -160,13 +177,13 @@ def main():
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
 
-    tokenizer = AutoTokenizer.from_pretrained(args.model_name)
+    tokenizer = AutoTokenizer.from_pretrained(args.model_name, cache_dir=args.model_cache)
 
     # Model class name for FSDP wrapping is read from the config without loading weights
     fsdp_kwargs = {}
     if args.fsdp:
         from transformers import AutoConfig
-        cfg = AutoConfig.from_pretrained(args.model_name)
+        cfg = AutoConfig.from_pretrained(args.model_name, cache_dir=args.model_cache)
         decoder_layer = "Qwen3_5DecoderLayer" if "qwen3_5" in cfg.model_type else None
         fsdp_kwargs = dict(
             fsdp="full_shard auto_wrap",
@@ -228,6 +245,7 @@ def main():
         torch.bfloat16 if use_bf16 else torch.float16)
     model = AutoModelForCausalLM.from_pretrained(
         args.model_name,
+        cache_dir=args.model_cache,
         dtype=load_dtype,
         attn_implementation=args.attn_implementation,
     )
