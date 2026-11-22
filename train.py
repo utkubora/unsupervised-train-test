@@ -46,7 +46,8 @@ from transformers import (
 )
 from transformers.trainer_utils import get_last_checkpoint
 
-DEFAULT_MODEL = "Qwen/Qwen3.8-27B"
+## DEFAULT_MODEL = "Qwen/Qwen3.8-27B"
+DEFAULT_MODEL = "google/gemma-4-E4B"
 DEFAULT_DATASET = "tascib/turkish-llm-dataset"
 # Downloaded models go to <storage>/models, datasets (raw + tokenized cache) to <storage>/datasets
 DEFAULT_STORAGE = Path(__file__).resolve().parent / "storage"
