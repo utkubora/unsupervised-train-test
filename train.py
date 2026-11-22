@@ -5,7 +5,7 @@ The model learns to predict the next token on your text, exactly like pretrainin
 No labels, no prompt/answer pairs: just plain text.
 
 Defaults are set up for a GPU server:
-  model   = Qwen/Qwen3.8-27B            (loaded text-only; the vision tower is dropped)
+  model   = Qwen/Qwen3-1.7B-Base        (small text-only base model; pass --model_name for others)
   dataset = tascib/turkish-llm-dataset  (Turkish pretraining corpus, `text` column)
   method  = LoRA, bf16, gradient checkpointing, 2048-token packed blocks
 
@@ -47,7 +47,9 @@ from transformers import (
 from transformers.trainer_utils import get_last_checkpoint
 
 ## DEFAULT_MODEL = "Qwen/Qwen3.8-27B"
-DEFAULT_MODEL = "google/gemma-4-E4B"
+## DEFAULT_MODEL = "google/gemma-4-E4B"  # multimodal; fails to load as a plain causal LM
+# Small, text-only, dense base model: no vision tower, no custom kernels, supports Turkish.
+DEFAULT_MODEL = "Qwen/Qwen3-1.7B-Base"
 DEFAULT_DATASET = "tascib/turkish-llm-dataset"
 # Downloaded models go to <storage>/models, datasets (raw + tokenized cache) to <storage>/datasets
 DEFAULT_STORAGE = Path(__file__).resolve().parent / "storage"
@@ -185,7 +187,8 @@ def main():
     if args.fsdp:
         from transformers import AutoConfig
         cfg = AutoConfig.from_pretrained(args.model_name, cache_dir=args.model_cache)
-        decoder_layer = "Qwen3_5DecoderLayer" if "qwen3_5" in cfg.model_type else None
+        decoder_layer = {"qwen3_5": "Qwen3_5DecoderLayer", "qwen3": "Qwen3DecoderLayer",
+                         "qwen2": "Qwen2DecoderLayer", "llama": "LlamaDecoderLayer"}.get(cfg.model_type)
         fsdp_kwargs = dict(
             fsdp="full_shard auto_wrap",
             fsdp_config={
